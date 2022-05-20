@@ -1,0 +1,511 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using EZCameraShake;
+
+public class ShootingScript : GunBase
+{
+    [Header("Raycast Stuff")]
+    [Tooltip("Determines whether raycast or projectiles are used")]
+    public bool UseRayCast = false;
+    //public GameObject impactEffect;
+    public LayerMask rayCastIgnore;
+    public float rayCastDropFactor = 1f;
+
+    [Header("Base Attributes")]
+    public float damage = 10;
+    public float range = 100;
+    public float fireRate = 10.0f;
+    public float bulletSpeed = 50f;
+    public int numOfShots = 1;
+    public float spreadModifier = 1;
+    public bool isSemiAuto = false;
+    public bool usesAim = false;
+
+    //private bool aiming = false;
+
+    
+    
+    public Transform BulletSpawnPoint;
+
+    private Animator gunAnim;
+
+    [Tooltip("0 = Standard bullet. 1 = Grenade round. 2 = Heavy Sniper round, 3= raycast")]
+    public int ammoType = 0;
+    public bool usesShortReload = false;
+
+    private float nextFire = 0f;
+    private float spread= 0.025f;
+
+    private ParticleSystem flash;
+    
+    public GameObject bullet;
+    private AudioSource bang;
+
+    [Header("Camera Properties")]
+    public float AimFov = 40f;
+    private Camera pCam;
+    private float pCamFov;
+    private float pCamRef;
+    private CameraMove pCamScript;
+    
+
+    private float recoilResetRotRef;
+
+    public Transform adsPos;
+
+    [Header("Bolt Properties")]
+    public GameObject boltObject;
+    public Vector3 boltMovementVector = Vector3.one;
+    public float boltRecoilForce = 0.2f;
+    public float boltResetTime = 0.2f;
+    private Vector3 boltResetVector;
+    private Vector3 boltHomePos;
+    [Header("To be used bolt properties")]
+    public bool isOpenBolt = false;
+    public Transform restPos; //position of the bolt when ready to fire
+    public Transform firedPos; //position of the bolt when fired
+    private bool useBoltPos = false;
+
+    private bool started = false;
+
+    private bool ads = false;
+    private float adsSpread;
+    private float hipSpread;
+
+
+    //used to smoothly rotate the gun when turning (just using yawSpeed directly gives jittery movement)
+    private float yRotAmount;
+    private float yRotVel;
+    private float xRotAmount;
+    private float xRotVel;
+    //Used in recoil
+    private float zRotAmount;
+
+    //values used to reset gun after 'animating' 
+    private Vector3 startPos;
+    private float startYRot;
+
+    
+    void Start()
+    {
+        flash = transform.GetComponentInChildren<ParticleSystem>();
+        bang = transform.GetComponent<AudioSource>();
+        hipSpread = spread * spreadModifier;
+        adsSpread = spread * spreadModifier / 5;
+        
+
+        gunAnim = GetComponentInParent<Animator>();
+
+        CurMag = MagSize;
+
+        MaxAmmo = AmmoPool;
+
+        started = true;
+
+        if(boltObject!=null)
+            boltHomePos = boltObject.transform.localPosition;
+
+
+
+        startPos = transform.localPosition;
+
+        startYRot = transform.localEulerAngles.y;
+        yRotAmount = 0;
+
+        xRotAmount = 0;
+
+        if (restPos != null && firedPos != null)
+            useBoltPos = true;
+
+        pCam = GetComponentInParent<Camera>();
+        pCamFov = pCam.fieldOfView;
+
+        pCamScript = pCam.GetComponent<CameraMove>();
+    }
+
+
+    // Update is called once per frame
+    void Update()
+    {
+        CharacterControllerScript.isAiming = ads;
+
+        bang.pitch = Time.timeScale;
+        if (CurMag <= 0 && Input.GetButtonDown("Fire1"))
+            WeaponSelection.ClickSound.PlayOneShot(WeaponSelection.ClickSound.clip, 0.75f);
+
+
+        if (Input.GetButtonDown("Fire2") && usesAim && Time.timeScale >0 &&!reloading)
+        {
+            ads = !ads;
+            
+        }
+
+        
+        CanvasScript.reticle.SetActive(!ads); //update whether the reticle should be active
+
+        if (!isSemiAuto)
+        {
+            //Fullauto fire
+            if (Input.GetButton("Fire1") && Time.time >= nextFire && Time.timeScale > 0 && CurMag> 0 && !reloading)
+            {
+                nextFire = Time.time + 1.0f / fireRate;
+                if (!UseRayCast)
+                    Shoot();
+                else
+                    RayCastShoot();
+                flash.Play();
+                bang.PlayOneShot(bang.clip, bang.volume);
+
+                CurMag--;
+            }
+        }
+        else
+        {
+            //semi auto fire
+            if (Input.GetButtonDown("Fire1") && Time.time >= nextFire && Time.timeScale > 0 && CurMag > 0 && !reloading)
+            {
+                nextFire = Time.time + 1.0f / fireRate;
+                if (!UseRayCast)
+                    Shoot();
+                else
+                    RayCastShoot();
+                flash.Play();
+                bang.PlayOneShot(bang.clip, bang.volume);
+
+                CurMag--;
+            }
+        }
+
+
+        if (Input.GetKeyDown("r") && !reloading && AmmoPool>0 && MagSize!=CurMag)
+        {
+            StartCoroutine(Reload());
+        }
+
+        //Recoil reset - note: uses smoothdamp as this gives a smoother, more natural movement 
+        if (ads)
+        {
+            transform.localPosition = Vector3.SmoothDamp(transform.localPosition, adsPos.localPosition, ref recoilResetForce, recoilResetTime);//reset recoil/move to ads pos
+            transform.localRotation = adsPos.localRotation; //align with aim pos angles to enusre proper sight alignment
+            
+            pCam.fieldOfView = Mathf.SmoothDamp(pCam.fieldOfView, AimFov, ref pCamRef, 0.25f); //resize cam fov when aiming
+        }
+        else
+        {
+            transform.localPosition = Vector3.SmoothDamp(transform.localPosition, Vector3.zero, ref recoilResetForce, recoilResetTime);//reset recoil/move to normal pos
+
+            pCam.fieldOfView = Mathf.SmoothDamp(pCam.fieldOfView, pCamFov, ref pCamRef, 0.25f); //resize cam fov when aiming
+        }
+        if(boltObject != null && !useBoltPos)
+        {
+            boltObject.transform.localPosition = Vector3.Lerp(boltObject.transform.localPosition, boltHomePos, boltResetTime);
+        }
+        else if (useBoltPos)
+            boltObject.transform.localPosition = Vector3.Lerp(boltObject.transform.localPosition, restPos.localPosition, boltResetTime);
+        //Reset bolt - note: uses lerp as this is consistent and makes more sense for mechanical movement
+
+
+        //Caluclations for the weapon 'sway'/movement when spining 
+        if (CameraMove.yawSpeed != 0)
+            yRotAmount = Mathf.SmoothDamp(yRotAmount, CameraMove.yawSpeed, ref yRotVel, 0.1f);
+        else //recenter gun smoothly to stop jittering
+            yRotAmount = Mathf.SmoothDamp(yRotAmount, 0, ref yRotVel, 0.5f);
+
+
+        if (CameraMove.pitchSpeed != 0)
+            xRotAmount = Mathf.SmoothDamp(xRotAmount, CameraMove.pitchSpeed, ref xRotVel, 0.1f);
+        else
+            xRotAmount = Mathf.SmoothDamp(xRotAmount, 0, ref xRotVel, 0.5f);
+
+
+        //if (ads)
+        //yRotAmount += 1; //just to line up aiming
+        //if (ads)
+        //transform.localEulerAngles = new Vector3(1 * 0 + xRotAmount, adsPos.rotation.y + yRotAmount, -1 * 0);
+        //else
+
+        //resent recoil rot
+        zRotAmount = Mathf.SmoothDamp(zRotAmount, 0, ref recoilResetRotRef, recoilResetTime);
+
+        //applying weapon sway/spin ONLY IF NOT AIMING
+        if (!ads)
+            transform.localEulerAngles = new Vector3(xRotAmount, startYRot + yRotAmount, zRotAmount);
+
+    }
+
+
+    private void Shoot()
+    {
+        if (UsesShotDetection)
+            ShotDetection();
+
+        for (int i = 0; i < numOfShots; i++)
+        {
+            GameObject bul = Instantiate(bullet, (BulletSpawnPoint.position/* - (0.5f * transform.forward)*/), new Quaternion(0,0,0,0)/*Quaternion.Euler(transform.rotation.x, transform.rotation.y, transform.rotation.z)*/);
+            float ranX;
+            float ranY;
+            float ranZ;
+
+            if (ads)
+            {
+                ranX = Random.Range(-adsSpread, adsSpread);
+                ranY = Random.Range(-adsSpread, adsSpread);
+                ranZ = Random.Range(-adsSpread, adsSpread);
+            }
+            else
+            {
+                ranX = Random.Range(-hipSpread, hipSpread);
+                ranY = Random.Range(-hipSpread, hipSpread);
+                ranZ = Random.Range(-hipSpread, hipSpread);
+            }
+
+
+            if (ammoType == 0) //Standard Bullet
+            {
+                BulletScript bulSc = bul.GetComponent<BulletScript>();
+                bulSc.SetTravelDir((-transform.forward + new Vector3(ranX, ranY, ranZ)) * bulletSpeed);
+                bulSc.damage = damage;
+                bulSc.range = range;
+            }
+            else if (ammoType == 1) //Grenade Round
+            {
+                GrenadeRoundScript bulScript = bul.GetComponent<GrenadeRoundScript>();
+
+                bulScript.SetTravelDir((-transform.forward + new Vector3(ranX, ranY, ranZ)) * bulletSpeed);
+                bulScript.damage = damage;
+                bulScript.range = range;
+            }
+            else if (ammoType == 2) //HeavySniper Round
+            {
+                bul.GetComponent<ExplosiveRoundScript>().SetTravelDir((-transform.forward + new Vector3(ranX, ranY, ranZ)) * bulletSpeed);
+                bul.GetComponent<ExplosiveRoundScript>().damage = damage;
+                bul.GetComponent<ExplosiveRoundScript>().range = range;
+            }
+        }
+
+        //ApplyRecoil
+        if (ads)
+            transform.localPosition -= new Vector3(Vector3.forward.x * recoilVector.x, Vector3.forward.y * recoilVector.y, Vector3.forward.z * recoilVector.z) * recoilForce / 5; //Recoil Aim
+        else
+        {
+            transform.localPosition -= new Vector3(Vector3.forward.x * recoilVector.x, Vector3.forward.y * recoilVector.y, Vector3.forward.z * recoilVector.z) * recoilForce; //Recoil movement
+            //transform.localEulerAngles = new Vector3(0,0,1) * recoilRotForce;
+            int randTurn = Random.Range(1, 3);
+            if (randTurn == 1)
+                zRotAmount += recoilRotForce;//Recoilturn
+            else
+                zRotAmount -= recoilRotForce;
+        }
+
+        //bolt movement
+        if (boltObject != null && !useBoltPos)
+            boltObject.transform.localPosition -= new Vector3(boltMovementVector.x, boltMovementVector.y, boltMovementVector.z) * boltRecoilForce;
+        else if (useBoltPos)
+            boltObject.transform.localPosition = firedPos.localPosition;
+
+        //shake cam
+        /*if(ads)//lighter shake when aiming
+            CameraShaker.Instance.ShakeOnce(0.5f, 1f, 0.1f, 0.25f);
+        else
+            CameraShaker.Instance.ShakeOnce(1f, 1f, 0.1f, 0.5f);*/
+
+        //Apply Camera Recoil
+        //pCam.transform.localEulerAngles += new Vector3(RecoilCamRotX, RecoilCamRotY, 0);
+        if (pCamScript != null)
+        {
+            pCamScript.ChangePitch(Random.Range(RecoilCamRotXMin, RecoilCamRotXMax));
+            pCamScript.ChangeYaw(Random.Range(RecoilCamRotYMin, RecoilCamRotYMax));
+        }
+    }
+
+    private void RayCastShoot()
+    {
+        for (int i = 0; i < numOfShots; i++)
+        {
+            if (UsesShotDetection)
+                ShotDetection();
+
+            //Generate Random spread
+            float ranX;
+            float ranY;
+            //float ranZ;
+
+            if (ads)
+            {
+                ranX = Random.Range(-adsSpread, adsSpread);
+                ranY = Random.Range(-adsSpread, adsSpread);
+                //ranZ = Random.Range(-adsSpread, adsSpread);
+            }
+            else
+            {
+                ranX = Random.Range(-hipSpread, hipSpread);
+                ranY = Random.Range(-hipSpread, hipSpread);
+                //ranZ = Random.Range(-hipSpread, hipSpread);
+            }
+
+            GameObject shot = Instantiate(bullet, BulletSpawnPoint.position, Quaternion.LookRotation(transform.forward*-1));
+            RaycastBullet rcB = shot.GetComponent<RaycastBullet>();
+            rcB.damage = damage;
+            rcB.range = range;
+            rcB.velocity = bulletSpeed;
+            rcB.dropFactor = rayCastDropFactor;
+            rcB.spread = spreadModifier;
+
+            /* old method of raycast - manual 
+            //New Way of shooting - Raycast
+            RaycastHit rayHit;
+            //Debug.DrawRay(pCam.transform.position, pCam.transform.forward*10, Color.white, 5.0f, false);
+            if (Physics.Raycast(pCam.transform.position, pCam.transform.forward, out rayHit, range, ~rayCastIgnore))
+            {
+                UniversalStats uniStats = rayHit.transform.GetComponent<UniversalStats>();
+
+                if (uniStats != null) //Damage objects/enemies with universal stats
+                {
+                    uniStats.health -= damage;
+                    uniStats.PlayHitSound();
+                    
+                }
+                else if (rayHit.transform.tag == "Enemy")
+                {
+                    rayHit.transform.GetComponent<Guard>().health -= damage;
+                    rayHit.transform.GetComponent<Rigidbody>().AddForce(50 * pCam.transform.forward);
+                }
+                //Apply force to rigidbodies 
+                Rigidbody uniRb = rayHit.transform.GetComponent<Rigidbody>();
+
+                if (uniRb != null)
+                    uniRb.AddForce(80 * pCam.transform.forward);
+
+                MaterialEffects matVfx = rayHit.transform.GetComponent<MaterialEffects>();
+
+                if(matVfx != null) // if the bullet hits a static material with effect, play the effects
+                {
+                    matVfx.playHitEffect(rayHit.point, Quaternion.LookRotation(rayHit.normal));
+                    matVfx.playHitSound(rayHit.point);
+                    matVfx.AddDamage(rayHit.point, Quaternion.LookRotation(-rayHit.normal));
+                }
+
+                //Instantiate Hit effect
+                //GameObject hitObj = Instantiate(impactEffect, rayHit.point, Quaternion.LookRotation(rayHit.normal));
+                //Destroy(hitObj, 1f);
+                //Debug.Log(rayHit.transform.name);
+            }*/
+
+        }
+
+        //ApplyRecoil
+        if (ads)
+            transform.localPosition -= new Vector3(Vector3.forward.x * recoilVector.x, Vector3.forward.y * recoilVector.y, Vector3.forward.z * recoilVector.z) * recoilForce / 5; //Recoil Aim
+        else
+        {
+            transform.localPosition -= new Vector3(Vector3.forward.x * recoilVector.x, Vector3.forward.y * recoilVector.y, Vector3.forward.z * recoilVector.z) * recoilForce; //Recoil hip
+            //transform.localEulerAngles = new Vector3(0,0,1) * recoilRotForce;
+            int randTurn = Random.Range(1, 3);
+            if (randTurn == 1)
+                zRotAmount += recoilRotForce;//Recoilturn
+            else
+                zRotAmount -= recoilRotForce;
+        }
+
+        //bolt movement
+        if (boltObject != null && !useBoltPos)
+            boltObject.transform.localPosition -= new Vector3(boltMovementVector.x, boltMovementVector.y, boltMovementVector.z) * boltRecoilForce;
+        else if (useBoltPos)
+            boltObject.transform.localPosition = firedPos.localPosition;
+
+        //Apply Camera Recoil Pattern
+        //pCam.transform.localEulerAngles += new Vector3(RecoilCamRotX, RecoilCamRotY, 0);
+        if (pCamScript != null)
+        {
+            pCamScript.ChangePitch(Random.Range(RecoilCamRotXMin, RecoilCamRotXMax));
+            pCamScript.ChangeYaw(Random.Range(RecoilCamRotYMin, RecoilCamRotYMax));
+        }
+    }
+
+    
+
+    IEnumerator Reload()
+    {
+        reloading = true;
+        done = false;
+        ads = false;
+        WeaponSelection.IsReloading = reloading;
+        //Debug.Log(gunAnim.GetCurrentAnimatorStateInfo(0).tagHash);
+        bool shortre = false;
+        try
+        {
+            if (usesShortReload && CurMag > 0)
+            {
+                gunAnim.SetBool("Reload2", reloading);
+                shortre = true;
+            }
+            else 
+                gunAnim.SetBool("Reload", reloading);
+        }
+        catch
+        {
+            Debug.Log("Anim not set up: Reload");
+        }
+        //yield return new WaitForSeconds(reloadTime);
+
+        while (reloading)
+        {
+            if (done)
+            {
+                if (CurMag < MagSize)
+                {
+                    if (AmmoPool - (MagSize - CurMag) >= 0) //if there is enough ammo left
+                    {
+                        AmmoPool -= (MagSize - CurMag);
+                        CurMag = MagSize;
+                    }
+                    else if (AmmoPool > 0)//Use the last of the ammo
+                    {
+                        CurMag += AmmoPool;
+                        AmmoPool = 0;
+                    }
+
+                }
+
+                reloading = false;
+                WeaponSelection.IsReloading = reloading;
+            }
+            yield return null;
+        }
+        try
+        {
+            if (shortre)
+                gunAnim.SetBool("Reload2", reloading);
+            else
+                gunAnim.SetBool("Reload", reloading);
+        }
+        catch
+        {
+            Debug.Log("Anim not set up: Reload");
+        }
+        //gunAnim.SetBool("Reload", false);
+    }
+
+    private void OnEnable()
+    {
+        reloading = false;
+
+        if (started)
+        {
+            try
+            {
+                gunAnim.SetBool("Switch", false);
+            }
+            catch
+            {
+                Debug.Log("Gun anim not set up: Switch");
+            }
+            //gunAnim.enabled = true;
+        }
+    }
+
+    
+
+}

@@ -1,0 +1,136 @@
+Problem with this setup is while updating lists is super easy, getting paths is not -> accessing a specific index of a linked list has 
+a O(n) time complexity, while an array is O(1). since it is only expected to update lists at the start, but maybe be needed to constantly get paths,
+prioritising the efficiency of getting a path is more important than the efficiancy of adding to the list 
+
+
+ public static AIPathManager instance;
+    private AIPath[] allPaths = new AIPath[0];
+    private LinkedList<AIPath> guardPaths;
+    private LinkedList<AIPath> sDronePaths; //small drone
+    private LinkedList<AIPath> lDronePaths; //large drone
+    private LinkedList<AIPath> aPaths;
+
+    private void Start()
+    {
+        instance = this;
+    }
+
+    public void UpdateAllPaths() //refreshes list of paths and sorts them into arrays
+    {
+        allPaths = FindObjectsOfType<AIPath>();
+        aPaths = new LinkedList<AIPath>(allPaths);
+        //int guardCount = 0;
+        //int smallDroneCount = 0;
+        //int largeDroneCount = 0;
+        //for(int i=0; i<allPaths.Length; i++) //find how many of each
+        //{
+        //    if (allPaths[i].pathType == AIPath.AIPathtype.Guard)
+        //        guardCount++;
+        //    else if (allPaths[i].pathType == AIPath.AIPathtype.SmallDrone)
+        //        smallDroneCount++;
+        //    else if (allPaths[i].pathType == AIPath.AIPathtype.LargeDrone)
+        //        largeDroneCount++;
+        //}
+
+        //guardPaths = new AIPath[guardCount];
+        //sDronePaths = new AIPath[smallDroneCount];
+        //lDronePaths = new AIPath[largeDroneCount];
+        //int gIndex=0;
+        //int sIndex=0;
+        //int lIndex=0;
+        for (int i = 0; i < allPaths.Length; i++) //do the loop again and assign values
+        {
+            if (allPaths[i].pathType == AIPath.AIPathtype.Guard)
+                guardPaths.AddLast(allPaths[i]);
+            else if (allPaths[i].pathType == AIPath.AIPathtype.SmallDrone)
+                sDronePaths.AddLast(allPaths[i]);
+            else if (allPaths[i].pathType == AIPath.AIPathtype.LargeDrone)
+                lDronePaths.AddLast(allPaths[i]);
+        }
+
+
+    }
+
+    public void UpdatePaths(AIPath p) //adds given path to appropriate array
+    {
+        if(p.pathType == AIPath.AIPathtype.Guard)
+        {
+            if (guardPaths.Contains(p)) //path is already in the list
+                return;
+
+            //Otherwise Add to list
+            guardPaths.AddLast(p);
+        }
+        else if (p.pathType == AIPath.AIPathtype.SmallDrone)
+        {
+            if (sDronePaths.Contains(p)) //path is already in the list
+                return;
+
+            //Otherwise Add to list
+            sDronePaths.AddLast(p);
+        }
+        else if (p.pathType == AIPath.AIPathtype.LargeDrone)
+        {
+            if (lDronePaths.Contains(p)) //path is already in the list
+                return;
+
+            //Otherwise Add to list
+            lDronePaths.AddLast(p);
+        }
+
+        //if reached here, then it must have added the path to a list, so now add it to allPaths
+        aPaths.AddLast(p);
+        /* do i need to add it to allPaths? could just add to apaths
+        AIPath[] allbckp = (AIPath[])allPaths.Clone();
+        allPaths = new AIPath[allPaths.Length+1];
+        for (int i = 0; i < allbckp.Length; i++) //fill up slots with preexsisting paths
+            allPaths[i] = allbckp[i];
+        allPaths[allPaths.Length - 1] = p; //add new one to the end
+        */
+    }
+
+    public Transform[] GetRandomPath(AIPath.AIPathtype type) //gets path of type
+    {
+        if(type == AIPath.AIPathtype.Guard)
+        {
+            return (guardPaths.(Random.Range(0, guardPaths.Count)).path);
+        }
+        if (type == AIPath.AIPathtype.SmallDrone)
+        {
+            return (sDronePaths[Random.Range(0, sDronePaths.Length)].path);
+        }
+        if (type == AIPath.AIPathtype.LargeDrone)
+        {
+            return (lDronePaths[Random.Range(0, lDronePaths.Length)].path);
+        }
+        return null;
+    }
+
+    public Transform[] GetRandomPath(AIPath.AIPathtype type, Transform pos) //gets path of type that is closest to pos
+    {
+        if (type == AIPath.AIPathtype.Guard)
+        {
+            int closestPoint = 0;
+            float closestDistance = Vector3.Distance(guardPaths[closestPoint].origin.position, pos.position);
+            for (int i=0; i < guardPaths.Length; i++)
+            {
+                if (Vector3.Distance(guardPaths[i].origin.position, pos.position) < closestDistance) //if closer than curret closest
+                { 
+                    closestPoint = i;
+                    closestDistance = Vector3.Distance(guardPaths[closestPoint].origin.position, pos.position); //update closestdistance
+                }
+            }
+
+
+            return (guardPaths[closestPoint].path);
+        }
+        if (type == AIPath.AIPathtype.SmallDrone)
+        {
+            return (sDronePaths[Random.Range(0, sDronePaths.Length)].path);
+        }
+        if (type == AIPath.AIPathtype.LargeDrone)
+        {
+            return (lDronePaths[Random.Range(0, lDronePaths.Length)].path);
+        }
+        return null;
+    }
